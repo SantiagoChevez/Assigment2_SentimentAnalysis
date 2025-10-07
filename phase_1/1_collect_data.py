@@ -206,6 +206,22 @@ def get_stock_data(symbols: Iterable[str], start_date: str, end_date: str,
 ### -----------------------------------------Web Scrapping ----------------------------------------- ###
 
 def get_news_data():
+    """
+    Collect news article text from supplied news datasets and save into a
+    single CSV file (`datasets/all_news.csv`).
+
+    High-level steps:
+      1. Read and concatenate input CSVs from `news_datasets/`.
+      2. Load an existing `datasets/all_news.csv` index (URL + id) to
+         skip already-processed URLs (resume capability).
+      3. For each new row: find the URL, check robots.txt, fetch politely,
+         extract article text, buffer rows, and periodically flush to CSV.
+
+    The function is tolerant to different column names across sources and
+    preserves the `article` field as-is (it may contain newlines). For very
+    large volumes, consider a disk-backed index instead of an in-memory set.
+    """
+
     news_datasets = [
         'news_datasets/analyst_ratings.csv',
         'news_datasets/headlines.csv',
@@ -215,8 +231,11 @@ def get_news_data():
     for dataset in news_datasets:
         df = pd.read_csv(dataset)
         all_news_data = pd.concat([all_news_data, df], ignore_index=True)
+    # HTTP session reused across requests for connection pooling
     session = requests.Session()
-    cache: Dict[str, str] = {}  # url -> article_text (to avoid duplicate fetches)
+    # Simple in-memory cache mapping URL -> article_text to avoid duplicate
+    # network calls for the same URL within a single run.
+    cache: Dict[str, str] = {}
 
     # Ensure datasets dir exists
     out_dir = os.path.join('datasets')
@@ -254,7 +273,9 @@ def get_news_data():
             processed_urls = set()
             csv_exists = False
 
-    # Buffering settings: collect rows in memory and flush every N rows
+    # Buffering settings: collect rows in memory and flush every N rows to
+    # reduce disk I/O. Adjust `flush_every` to trade durability vs. write
+    # amplification (lower -> safer but more writes).
     flush_every = 100
     buffer = []
 
@@ -266,27 +287,35 @@ def get_news_data():
     publisher_cols = ['publisher', 'source', 'site']
 
     try:
+        # Iterate rows from concatenated news datasets. We try to be tolerant
+        # about column names: `url` may be in different columns across sources
+        # so `url_cols` defines candidates to check.
         for _, row in all_news_data.iterrows():
-            # Find URL
+            # 1) Locate a URL in the row using known candidate column names.
             url = None
             for c in url_cols:
                 if c in row and pd.notna(row[c]):
                     url = str(row[c])
                     break
             if not url:
+                # No URL -> nothing to fetch for this row
                 continue
 
-            # Skip if already processed (resume capability)
+            # 2) Skip URLs already processed (resume capability relies on
+            # reading existing CSV's URL column earlier to populate
+            # `processed_urls`). This makes the run idempotent.
             if url in processed_urls:
-                # existing entry -> skip
                 continue
 
-            # Basic robots.txt check
+            # 3) Respect robots.txt: do not fetch pages disallowed to our
+            # user-agent. `is_allowed()` wraps urllib.robotparser logic.
             if not is_allowed(url):
                 print(f"Skipping (disallowed by robots.txt): {url}")
                 continue
 
-            # Extract metadata with fallbacks
+            # 4) Extract metadata from the input row using fallback order
+            # (date, symbol, headline, publisher). `pick_first` helper returns
+            # the first non-null candidate value.
             def pick_first(r, candidates):
                 for c in candidates:
                     if c in r and pd.notna(r[c]):
@@ -298,20 +327,24 @@ def get_news_data():
             headline_val = pick_first(row, headline_cols)
             publisher_val = pick_first(row, publisher_cols)
 
-            # Fetch or reuse article text
+            # 5) Fetch article text (or reuse from in-memory cache).
+            #    - `polite_get` performs a respectful HTTP GET (crawl-delay,
+            #      backoff, 429/503 handling) and returns a Response or None.
+            #    - `fetch_article` tries to extract the main article from HTML
+            #      using BeautifulSoup heuristics; if it fails we fallback to
+            #      the full response text.
             article_text = cache.get(url)
             if article_text is None:
                 resp = polite_get(url, session=session, default_delay=1.0)
                 if resp is None:
                     article_text = ""
                 else:
-                    # Use fetch_article to get cleaned article text when possible
                     article_text = fetch_article(url) or resp.text or ""
                 cache[url] = article_text
 
-            # Build the output row in the sample's column order
+            # 6) Build the output row in the canonical sample column order.
             row_out = {
-                'id': None,  # will set when flushing
+                'id': None,  # will be set when flushing to disk
                 'headline': str(headline_val) if headline_val is not None else "",
                 'URL': url,
                 'article': article_text,
@@ -320,15 +353,16 @@ def get_news_data():
                 'symbol': str(symbol_val) if symbol_val is not None else "",
             }
 
-            # Buffer the row and flush periodically to reduce I/O
+            # 7) Buffer the row and mark it processed in-memory so duplicates
+            #    in the same run are skipped immediately.
             buffer.append(row_out)
-            # Mark as processed immediately so duplicates in the input during the same run are skipped
             processed_urls.add(url)
 
-            # If buffer reached threshold, flush to disk
+            # 8) Periodic flush: when buffer reaches `flush_every`, write to
+            #    CSV in append mode and advance `next_id`. The header is
+            #    written only when the CSV didn't exist before.
             if len(buffer) >= flush_every:
                 try:
-                    # Assign incremental ids before flushing
                     for i, r in enumerate(buffer):
                         r['id'] = next_id + i
                     df_flush = pd.DataFrame(buffer, columns=sample_cols)
@@ -336,15 +370,15 @@ def get_news_data():
                 except Exception as e:
                     print(f"Failed to flush buffer to CSV: {e}")
                 else:
-                    # Update processed set for flushed rows (already added above, but keep idempotent)
                     for r in buffer:
                         processed_urls.add(r['URL'])
-                    # Advance next_id
                     next_id += len(buffer)
                     buffer = []
                     csv_exists = True
 
     except KeyboardInterrupt:
+        # User requested stop; we'll flush remaining buffer in the finally
+        # block so progress is preserved.
         print('\nInterrupted by user - flushing buffer before exit...')
     finally:
         # Flush any remaining buffered rows
