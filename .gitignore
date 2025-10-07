@@ -1,2 +1,3 @@
 news_datasets/analyst_ratings.csv
 news_datasets/headlines.csv
+*.csv
