@@ -130,9 +130,15 @@ def polite_get(url: str,
     return None
 
 
-def fetch_article(url: str, user_agent: str = DEFAULT_USER_AGENT) -> Optional[str]:
-    # Use polite_get to fetch the page (this also respects robots.txt)
-    resp = polite_get(url, user_agent=user_agent)
+def fetch_article(url: str,
+                  resp: Optional[requests.Response] = None,
+                  user_agent: str = DEFAULT_USER_AGENT,
+                  session: Optional[requests.Session] = None) -> Optional[str]:
+    """Fetch and parse an article's main text.
+    """
+    # If caller supplied a Response object, parse it directly
+    if resp is None:
+        resp = polite_get(url, user_agent=user_agent, session=session)
     if resp is None:
         return None
 
