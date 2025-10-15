@@ -4,9 +4,13 @@ import os
 import unicodedata
 from bs4 import BeautifulSoup
 import spacy
-import argparse
 import sys
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from collections import Counter
+
+NEGATION_MODE = 'dependency'
+
+
 
 def group_news_by_3_days():
     df = pd.read_csv('datasets/all_news.csv', parse_dates=['date'])
@@ -34,6 +38,8 @@ def group_news_by_3_days():
 
     aggregated_df = pd.DataFrame(aggregated_list)
     aggregated_df.to_csv("datasets/aggregated_news.csv", index=False)
+    
+    
     
 def preprocess_news():
     
@@ -70,7 +76,6 @@ def preprocess_news():
         text = re.sub(r'\s+', ' ', text).strip()
         return text
 
-    # Arg parse is handled in __main__; allow callers to set via env/args later
     # Try to load spaCy but do not require the parser by default (heuristic mode uses tokenizer/lemmatizer only)
     try:
         # load model without parser by default; parser is needed for dependency-based negation
@@ -86,8 +91,8 @@ def preprocess_news():
 
     cleaned_texts = []
 
-    # Decide negation strategy: default 'heuristic'. If caller set env/arg to 'dependency' we will try to use parser-based method.
-    negation_mode = getattr(preprocess_news, '_negation_mode', 'heuristic')
+    # Decide negation strategy (now fixed globally via NEGATION_MODE)
+    negation_mode = NEGATION_MODE
 
     if negation_mode == 'dependency' and has_spacy:
         # We need the parser to find dependency relations for negation. Try to enable it.
@@ -190,31 +195,7 @@ def preprocess_news():
     df.to_csv(src, index=False)
     print(f"Preprocessing complete: updated {src} ({len(df)} rows)")
     
-    
-def vectorize_dtm():
-    src = 'datasets/aggregated_news.csv'
-    if not os.path.exists(src):
-        raise FileNotFoundError(f"Missing aggregated news CSV: {src}")
-    df = pd.read_csv(src)
-    if 'symbol' not in df.columns:
-        raise KeyError(f"Input CSV {src} missing required column 'symbol'. Columns: {list(df.columns)}")
-    vectorizer = CountVectorizer(max_features=5000, min_df=2)
-    dtm = vectorizer.fit_transform(df['news'].astype(str).tolist())
-    # Build a dense vector representation per document (as list) and store as a single column
-    vectors = dtm.toarray().tolist()
 
-    out = pd.DataFrame({
-        'symbol': df['symbol'],
-        'date': df['date'],
-        # store the raw vector as a stringified list so it matches expected sample format
-        'news_vector': [str(v) for v in vectors]
-    })
-    # attach impact scores (if available) and write CSV
-    out = merge_impact_scores(out)
-    out = out[['symbol', 'date', 'news_vector', 'impact_score']]
-    dtm_src = 'datasets/vectorized_news_dtm.csv'
-    out.to_csv(dtm_src, index=False)
-    print(f"Document-term matrix saved to {dtm_src} ({out.shape[0]} rows, columns={list(out.columns)})")
 def merge_impact_scores(out_df, impact_candidates=None):
     """
     Normalize keys and merge impact_score from the first available impact CSV.
@@ -288,14 +269,63 @@ def merge_impact_scores(out_df, impact_candidates=None):
     print("No impact CSV found; `impact_score` will be empty. Placeholders emitted for later merging.")
     return out
 
-def vectorize_tfidf():
+    
+    
+    
+def vectorize_dtm():
+
     src = 'datasets/aggregated_news.csv'
     if not os.path.exists(src):
         raise FileNotFoundError(f"Missing aggregated news CSV: {src}")
     df = pd.read_csv(src)
     if 'symbol' not in df.columns:
         raise KeyError(f"Input CSV {src} missing required column 'symbol'. Columns: {list(df.columns)}")
-    vec = TfidfVectorizer(max_features=5000, min_df=2)
+
+    # Auto-reduce features/sample if dataset is too large
+    max_features = 5000
+    min_df = 2
+    if len(df) > 100_000:
+        print(f"[WARN] Large dataset detected ({len(df)} rows). Reducing max_features to 1000 for DTM.")
+        max_features = 1000
+        min_df = 5
+
+    vectorizer = CountVectorizer(max_features=max_features, min_df=min_df)
+    dtm = vectorizer.fit_transform(df['news'].astype(str).tolist())
+    vectors = dtm.toarray().tolist()
+
+    out = pd.DataFrame({
+        'symbol': df['symbol'],
+        'date': df['date'],
+        # store the raw vector as a stringified list so it matches expected sample format
+        'news_vector': [str(v) for v in vectors]
+    })
+    # attach impact scores (if available) and write CSV
+    out = merge_impact_scores(out, ) #'datasets/historical_prices_impact.csv'
+    out = out[['symbol', 'date', 'news_vector', 'impact_score']]
+    dtm_src = 'datasets/vectorized_news_dtm.csv'
+    out.to_csv(dtm_src, index=False)
+    print(f"Document-term matrix saved to {dtm_src} ({out.shape[0]} rows, columns={list(out.columns)})")
+    
+    
+    
+
+def vectorize_tfidf():
+
+    src = 'datasets/aggregated_news.csv'
+    if not os.path.exists(src):
+        raise FileNotFoundError(f"Missing aggregated news CSV: {src}")
+    df = pd.read_csv(src)
+    if 'symbol' not in df.columns:
+        raise KeyError(f"Input CSV {src} missing required column 'symbol'. Columns: {list(df.columns)}")
+
+    max_features = 5000
+    min_df = 2
+    if len(df) > 100_000:
+        print(f"[WARN] Large dataset detected ({len(df)} rows). Reducing max_features to 1000 for TF-IDF.")
+        max_features = 1000
+        min_df = 5
+
+    vec = TfidfVectorizer(max_features=max_features, min_df=min_df)
     tfidf = vec.fit_transform(df['news'].astype(str).tolist())
     vectors = tfidf.toarray().tolist()
 
@@ -304,7 +334,7 @@ def vectorize_tfidf():
         'date': df['date'],
         'news_vector': [str(v) for v in vectors]
     })
-    out = merge_impact_scores(out)
+    out = merge_impact_scores(out,) #'datasets/historical_prices_impact.csv'
     out = out[['symbol', 'date', 'news_vector', 'impact_score']]
     dst = 'datasets/vectorized_news_tfidf.csv'
     out.to_csv(dst, index=False)
@@ -319,23 +349,33 @@ def vectorize_curated():
         raise FileNotFoundError(f"Missing aggregated news CSV: {src}")
     df = pd.read_csv(src)
 
-    # curated list of sentiment-bearing words (example from assignment)
-    ###------CHANGE THESE WORDS AS NEEDED------###
-    curated_words = [
-        'gain', 'loss', 'strong', 'weak', 'upgrade', 'downgrade', 'beat', 'miss', 'bullish', 'bearish'
-    ]
-    # Use CountVectorizer with fixed vocabulary to get counts for these terms
-    cv = CountVectorizer(vocabulary={w: i for i, w in enumerate(curated_words)}, lowercase=True)
-    # With a fixed vocabulary we can directly transform
-    mat = cv.transform(df['news'].astype(str).tolist())
-    vectors = mat.toarray().tolist()
+    # Use exactly the user-provided top 10 tokens as features
+    curated_words = ['buy', 'sell', 'beat', 'miss', 'guidance', 'dividend', 'deal', 'cut', 'upgrade', 'plunge']
+    
+    def token_counts(text: str) -> Counter:
+        toks = str(text).split()
+        return Counter(toks)
+
+    vectors = []
+    cat_doc_hits = [0]*len(curated_words)
+    for text in df['news'].astype(str).tolist():
+        cnt = token_counts(text)
+        vec = []
+        for idx, t in enumerate(curated_words):
+            s = cnt.get(t, 0) + cnt.get(f"NOT_{t}", 0)
+            vec.append(int(s))
+            if s > 0:
+                cat_doc_hits[idx] += 1
+        vectors.append(vec)
+
+    
 
     out = pd.DataFrame({
         'symbol': df['symbol'],
         'date': df['date'],
         'news_vector': [str(v) for v in vectors]
     })
-    out = merge_impact_scores(out)
+    out = merge_impact_scores(out,) #'datasets/historical_prices_impact.csv'
     out = out[['symbol', 'date', 'news_vector', 'impact_score']]
     dst = 'datasets/vectorized_news_curated.csv'
     out.to_csv(dst, index=False)
@@ -344,21 +384,14 @@ def vectorize_curated():
     # (no duplicated writes here — each vectorizer writes its own CSV earlier)
     
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Aggregate and preprocess news for sentiment tasks')
-    parser.add_argument('--negation-mode', choices=['heuristic', 'dependency'], default='heuristic',
-                        help='Negation handling strategy: heuristic (short scope) or dependency (spaCy parser-based)')
-    args = parser.parse_args()
-
-    # Attach chosen negation mode to function so it can be read inside
-    preprocess_news._negation_mode = args.negation_mode
-
-    print(1)
+    print(f"Running pipeline with fixed negation mode: {NEGATION_MODE}")
     group_news_by_3_days()
     print(2)
     preprocess_news()
     print(3)
-    vectorize_dtm()
+    #vectorize_dtm()
     print(4)
-    vectorize_tfidf()
+    #vectorize_tfidf()
     print(5)
     vectorize_curated()
+    print("Vectorization pipeline complete.")
