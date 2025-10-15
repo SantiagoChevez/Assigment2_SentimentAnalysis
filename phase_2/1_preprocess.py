@@ -1,9 +1,4 @@
-
-
 import pandas as pd
-
-
-
 
 def preprocess(csv_path: str,start_date: str):
     df = pd.read_csv(csv_path, low_memory=False)

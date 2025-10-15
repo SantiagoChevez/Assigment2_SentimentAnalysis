@@ -1,0 +1,10 @@
+{
+  "input_dim": 10,
+  "output_dim": 7,
+  "hidden_layers": [
+    256,
+    128
+  ],
+  "activation": "tanh",
+  "dropout": 0.4
+}
