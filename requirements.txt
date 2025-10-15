@@ -1,0 +1,38 @@
+# Web Scraping
+requests>=2.31.0
+selenium>=4.15.2
+beautifulsoup4>=4.12.0
+lxml>=4.9.3  # HTML parser for BeautifulSoup
+chromedriver-autoinstaller>=0.6.2  # For Selenium
+webdriver-manager>=4.0.1  # For Selenium browser management
+
+# Data Processing
+numpy
+pandas
+scikit-learn
+pandera 
+
+
+# NLP and Text Processing
+nltk
+spacy
+transformers  # For advanced NLP tasks
+
+# Data Visualization
+matplotlib
+seaborn
+
+# Financial Analysis
+yfinance
+ta
+
+# Testing
+pytest
+
+# Utilities
+python-dotenv>=1.0.0  # For environment variables
+tqdm>=4.66.1  # For progress bars
+
+
+# Other
+spacy
