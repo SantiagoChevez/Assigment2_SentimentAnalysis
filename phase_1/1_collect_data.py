@@ -4,8 +4,7 @@ import os
 import time
 from typing import Iterable, Tuple, Dict, Set
 import requests 
-from time import sleep
-from webscraper_utils import is_allowed, polite_get, fetch_article, get_crawl_delay
+from webscraper_utils import is_allowed, polite_get, fetch_article
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
@@ -15,15 +14,95 @@ def get_symbols_from_news_datasets():
         'news_datasets/analyst_ratings.csv',
         'news_datasets/headlines.csv',
     ]
+    return get_symbols_from_news_datasets_filtered(None)
+
+
+def normalize_symbol(sym: str) -> str:
+    """Normalize symbol text to a canonical form used for comparisons/Yahoo format.
+    Examples: 'brk.b' -> 'BRK-B'
+    """
+    if not isinstance(sym, str):
+        return ""
+    return sym.strip().upper().replace('.', '-')
+
+
+def get_symbols_from_news_datasets_filtered(allowed_symbols: Set[str] = None) -> Set[str]:
+    """Return distinct symbols found in the news datasets.
+
+    If allowed_symbols is provided (set of normalized symbols), only returns
+    symbols that are present in that allowed set.
+    """
+    news_datasets = [
+        'news_datasets/analyst_ratings.csv',
+        'news_datasets/headlines.csv',
+    ]
     symbols = set()
+    allowed_norm = None
+    if allowed_symbols is not None:
+        allowed_norm = set(normalize_symbol(s) for s in allowed_symbols)
+
     for dataset in news_datasets:
         if os.path.exists(dataset):
             df = pd.read_csv(dataset)
+            # support columns 'symbol' or 'stock'
+            col = None
             if 'symbol' in df.columns:
-                symbols.update(df['symbol'].dropna().unique())
+                col = 'symbol'
             elif 'stock' in df.columns:
-                symbols.update(df['stock'].dropna().unique())
+                col = 'stock'
+            if col:
+                for s in df[col].dropna().astype(str).unique():
+                    s_norm = normalize_symbol(s)
+                    if allowed_norm is None or s_norm in allowed_norm:
+                        symbols.add(s_norm)
     return symbols
+
+
+def get_sp500_symbols() -> Set[str]:
+    """Attempt to obtain the S&P 500 constituent symbols.
+
+    """
+    sources_tried = []
+    # 1) Yahoo Finance components page
+    try:
+        url = 'https://finance.yahoo.com/quote/%5EGSPC/components'
+        tables = pd.read_html(url)
+        if tables:
+            # find a table that contains a Symbol-like column
+            for t in tables:
+                cols = [c.lower() for c in t.columns.astype(str).tolist()]
+                if any('symbol' in c for c in cols):
+                    sym_col = [c for c in t.columns if 'symbol' in str(c).lower()][0]
+                    syms = t[sym_col].astype(str).tolist()
+                    return set(normalize_symbol(s) for s in syms if s and str(s).strip())
+        sources_tried.append('yahoo')
+    except Exception:
+        sources_tried.append('yahoo-failed')
+
+    # 2) DataHub mirror (raw CSV)
+    try:
+        url = 'https://datahub.io/core/s-and-p-500-companies/r/constituents.csv'
+        df = pd.read_csv(url)
+        if 'Symbol' in df.columns:
+            return set(normalize_symbol(s) for s in df['Symbol'].astype(str).tolist())
+        sources_tried.append('datahub')
+    except Exception:
+        sources_tried.append('datahub-failed')
+
+    # 3) Wikipedia fallback (previous behaviour)
+    try:
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        tables = pd.read_html(url)
+        if tables:
+            sp500 = tables[0]
+            if 'Symbol' in sp500.columns:
+                return set(normalize_symbol(s) for s in sp500['Symbol'].astype(str).tolist())
+        sources_tried.append('wikipedia')
+    except Exception:
+        sources_tried.append('wikipedia-failed')
+
+    print(f"Failed to fetch S&P500 symbols from known sources ({sources_tried}). Returning empty set.")
+    return set()
 
 def chunked_iterable(iterable: Iterable, size: int):
     items = list(iterable)
@@ -198,7 +277,7 @@ def get_stock_data(symbols: Iterable[str], start_date: str, end_date: str,
 
 ### -----------------------------------------Web Scrapping ----------------------------------------- ###
 
-def get_news_data():
+def get_news_data(allowed_symbols: Set[str] = None, start_date: str = None, end_date: str = None):
     """
     Collect news article text from supplied news datasets and save into a
     single CSV file (`datasets/all_news.csv`).
@@ -215,6 +294,24 @@ def get_news_data():
         all_news_data = pd.concat([all_news_data, df], ignore_index=True)
     # HTTP session reused across requests for connection pooling
     session = requests.Session()
+    # Normalize allowed_symbols for quick membership checks
+    allowed_norm = None
+    if allowed_symbols is not None:
+        allowed_norm = set(normalize_symbol(s) for s in allowed_symbols)
+
+    # Parse date bounds and convert to integer nanosecond epoch to avoid tz-naive vs tz-aware comparison errors
+    def _ts_to_ns(x):
+        try:
+            t = pd.to_datetime(x, errors='coerce', utc=True)
+            if pd.isna(t):
+                return None
+            return int(t.value)
+        except Exception:
+            return None
+
+    start_ns = _ts_to_ns(start_date) if start_date is not None else None
+    end_ns = _ts_to_ns(end_date) if end_date is not None else None
+
     # Simple in-memory cache mapping URL text to avoid duplicate calls for the same URL within a single run.
     cache: Dict[str, str] = {}
     cache_lock = threading.Lock()
@@ -290,10 +387,22 @@ def get_news_data():
         if not is_allowed(url):
             print(f"Skipping (disallowed by robots.txt): {url}")
             return None
-        date_val = row['date']
+        # Filter by symbol and date (if requested)
         symbol_val = pick_first(row, symbol_cols)
-        headline_val = row['headline']
-        publisher_val = row['publisher']
+        symbol_norm = normalize_symbol(symbol_val)
+        if allowed_norm is not None and symbol_norm not in allowed_norm:
+            return None
+        # parse date
+        date_raw = row.get('date', None)
+        # Convert row date to integer ns for robust comparison
+        date_ns = _ts_to_ns(date_raw)
+        if start_ns is not None and (date_ns is None or date_ns < start_ns):
+            return None
+        if end_ns is not None and (date_ns is None or date_ns >= end_ns):
+            return None
+        date_val = row['date']
+        headline_val = row.get('headline', None)
+        publisher_val = row.get('publisher', None)
         # Fetch article text: consult cache first
         with cache_lock:
             article_text = cache.get(url)
@@ -305,7 +414,13 @@ def get_news_data():
             if resp is None:
                 article_text = ""
             else:
-                article_text = fetch_article(url, resp=resp, session=session) or resp.text or ""
+                # fetch_article now returns None when the page is promotional/boilerplate
+                fetched = fetch_article(url, resp=resp, session=session)
+                if fetched is None:
+                    # Detected as promotional / boilerplate (e.g., Benzinga Pro ad) -> skip
+                    return None
+                # Use fetched article text if available, otherwise fall back to full resp.text
+                article_text = fetched or resp.text or ""
             with cache_lock:
                 cache[url] = article_text
         
@@ -316,7 +431,7 @@ def get_news_data():
             'article': article_text,
             'publisher': str(publisher_val) if publisher_val is not None else "",
             'date': str(date_val) if date_val is not None else "",
-            'symbol': str(symbol_val) if symbol_val is not None else "",
+            'symbol': symbol_norm if symbol_norm is not None else "",
         }
         return (url, row_out)
 
@@ -336,10 +451,20 @@ def get_news_data():
                 continue
             # If we've already processed this URL previously, duplicate the stored article text
             if url in processed_urls:
-                date_val = row['date']
+                # Enforce same symbol/date filtering as for new rows
                 symbol_val = pick_first(row, symbol_cols)
-                headline_val = row['headline']
-                publisher_val = row['publisher']
+                symbol_norm = normalize_symbol(symbol_val)
+                if allowed_norm is not None and symbol_norm not in allowed_norm:
+                    continue
+                # date filter
+                date_ns = _ts_to_ns(row.get('date', None))
+                if start_ns is not None and (date_ns is None or date_ns < start_ns):
+                    continue
+                if end_ns is not None and (date_ns is None or date_ns >= end_ns):
+                    continue
+                date_val = row['date']
+                headline_val = row.get('headline', None)
+                publisher_val = row.get('publisher', None)
                 article_text = processed_map.get(url, "")
                 row_out = {
                     'id': None,
@@ -348,7 +473,7 @@ def get_news_data():
                     'article': article_text,
                     'publisher': str(publisher_val) if publisher_val is not None else "",
                     'date': str(date_val) if date_val is not None else "",
-                    'symbol': str(symbol_val) if symbol_val is not None else "",
+                    'symbol': symbol_norm,
                 }
                 buffer.append(row_out)
                 scheduled_urls.add(url)
@@ -437,8 +562,36 @@ def get_news_data():
     
 
 if __name__ == "__main__":
-    #symbols = get_symbols_from_news_datasets()
-    #get_stock_data(symbols, start_date="2009-01-01", end_date="2020-12-31")
-    print("WEB SCRAPING")
-    get_news_data()
+    # Desired flow:
+    # 1) obtain S&P500 set, 2) obtain dataset symbols, 3) intersect and pick top-500,
+    # 4) download stock data only for that intersection, 5) fetch news only for those symbols.
+    start = "2009-01-01"
+    end = "2015-01-01"
+
+    # 1) obtain S&P500 set
+    sp500_set = get_sp500_symbols()
+
+    # 2) obtain symbols mentioned in the news datasets
+    news_symbols = get_symbols_from_news_datasets()
+
+    # 3) intersect (only keep symbols that are in both sets). If we failed to get
+    # the S&P500 set, fall back to taking up to 500 news-derived symbols.
+    if sp500_set:
+        allowed_set = set(s for s in news_symbols if s in sp500_set)
+    else:
+        print("Warning: could not fetch authoritative S&P500 list; defaulting to news-derived symbols (first 500).")
+        allowed_set = set(list(news_symbols)[:500])
+
+    # Limit to 500 (in case intersection is larger)
+    allowed_list = sorted(list(allowed_set))[:500]
+
+    if not allowed_list:
+        print("No overlapping symbols between news datasets and S&P500 (or no symbols available). Exiting.")
+    else:
+        print(f"Proceeding with {len(allowed_list)} symbols (intersection with S&P500). Downloading historical data from {start} to {end}...")
+        get_stock_data(allowed_list, start_date=start, end_date=end, csv_path="datasets/historical_prices.csv")
+
+        # Finally, fetch news only for the allowed symbols and date window
+        print("WEB SCRAPING (news collection for selected symbols)")
+        get_news_data(allowed_symbols=set(allowed_list), start_date=start, end_date=end)
     
