@@ -1,18 +1,3 @@
-"""Helpers for polite web scraping.
-
-- Respect robots.txt (using urllib.robotparser)
-- Respect crawl-delay when present
-- Polite GET with configurable delay and simple backoff for 429/503
-- Simple article extraction helper using BeautifulSoup
-
-Usage:
-    from webscraper_utils import polite_get, fetch_article, is_allowed
-    resp = polite_get(url)
-    text = fetch_article(url)
-
-This file is intentionally self-contained and optional. Use headless browsers only when
-robots.txt and the site's Terms of Service allow automated access.
-"""
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
 import requests
