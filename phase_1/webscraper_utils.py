@@ -1,24 +1,10 @@
-"""Helpers for polite web scraping.
-
-- Respect robots.txt (using urllib.robotparser)
-- Respect crawl-delay when present
-- Polite GET with configurable delay and simple backoff for 429/503
-- Simple article extraction helper using BeautifulSoup
-
-Usage:
-    from webscraper_utils import polite_get, fetch_article, is_allowed
-    resp = polite_get(url)
-    text = fetch_article(url)
-
-This file is intentionally self-contained and optional. Use headless browsers only when
-robots.txt and the site's Terms of Service allow automated access.
-"""
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
 import requests
 import time
 from typing import Optional, Dict
 from bs4 import BeautifulSoup
+import re
 
 # Simple in-memory cache for RobotFileParser objects
 _ROBOTS_CACHE: Dict[str, RobotFileParser] = {}
@@ -136,6 +122,37 @@ def fetch_article(url: str,
                   session: Optional[requests.Session] = None) -> Optional[str]:
     """Fetch and parse an article's main text.
     """
+    # Helper: detect promotional / boilerplate pages (e.g., Benzinga Pro marketing pages)
+    PROMO_KEYPHRASES = [
+        "benzinga pro",
+        "join 10,000+",
+        "active trader chat",
+        "my free trial",
+        "free: follow your stocks",
+        "only comprehensive mobile notifications",
+        "white glove support",
+        "option trade alerts",
+        "most trusted brand",
+        "fatest intelligence",
+        "fastest intelligence",
+    ]
+
+    def is_promotional_content(text: str) -> bool:
+        if not text:
+            return False
+        t = re.sub(r"\s+", " ", text.lower())
+        # Check for explicit marketing phrases
+        for p in PROMO_KEYPHRASES:
+            if p in t:
+                return True
+        # Very short pages (e.g., less than ~40 words) are suspicious
+        words = t.split()
+        if len(words) < 40:
+            # But allow this if it looks like a normal short article (contains common article tokens)
+            if any(w in t for w in ("said", "reported", "expects", "announced")):
+                return False
+            return True
+        return False
     # If caller supplied a Response object, parse it directly
     if resp is None:
         resp = polite_get(url, user_agent=user_agent, session=session)
@@ -161,7 +178,14 @@ def fetch_article(url: str,
 
     # If still not found, return the visible text as a last resort
     if not article:
-        return soup.get_text(separator="\n", strip=True)
+        text = soup.get_text(separator="\n", strip=True)
+        # If the page looks promotional or boilerplate, signal caller to skip by returning None
+        if is_promotional_content(text):
+            return None
+        return text
 
-    # Normalize and return the article text
-    return article.get_text(separator="\n", strip=True)
+    # Normalize and return the article text (or None if promotional)
+    article_text = article.get_text(separator="\n", strip=True)
+    if is_promotional_content(article_text):
+        return None
+    return article_text
