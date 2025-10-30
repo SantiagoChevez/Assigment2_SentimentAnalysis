@@ -71,7 +71,7 @@ def main():
         raise FileNotFoundError(f"Missing input: {IN_PRICES}")
 
     # Read once, with light dtypes to save memory
-    usecols = ["date","symbol","open","high","low","close","volume"]
+    usecols = ["date","symbol","open","high","low","AdjClose","volume"]
     df = pd.read_csv(
         IN_PRICES,
         usecols=usecols,
@@ -81,13 +81,29 @@ def main():
             "open": "float32",
             "high": "float32",
             "low": "float32",
-            "close": "float32",
+            # Some collectors write 'close' instead of 'AdjClose'. Read as string/float later
+            "AdjClose": "float32",
             "volume": "float64",   # keep float for safety if large
         },
     ).sort_values(["symbol","date"]).reset_index(drop=True)
 
+    # Compatibility: if CSV used 'close' instead of 'AdjClose', map it so downstream code finds it
+    if 'close' in df.columns:
+        # If AdjClose missing or contains NaNs, prefer 'close' values as fallback
+        if 'AdjClose' not in df.columns:
+            df.rename(columns={'close': 'AdjClose'}, inplace=True)
+        else:
+            # Fill missing AdjClose from close, then coerce
+            df['AdjClose'] = pd.to_numeric(df['AdjClose'], errors='coerce')
+            df['close'] = pd.to_numeric(df['close'], errors='coerce')
+            df['AdjClose'] = df['AdjClose'].fillna(df['close']).astype('float32')
+    else:
+        # Ensure AdjClose is numeric (coerce any bad values to NaN)
+        if 'AdjClose' in df.columns:
+            df['AdjClose'] = pd.to_numeric(df['AdjClose'], errors='coerce').astype('float32')
+
     # 1) Daily log returns per symbol
-    df["daily_return"] = df.groupby("symbol", observed=True)["close"].transform(log_ret).astype("float32")
+    df["daily_return"] = df.groupby("symbol", observed=True)["AdjClose"].transform(log_ret).astype("float32")
 
     # 2) Market series (S&P)
     mkt = df[df["symbol"].astype(str).str.lower() == MARKET_SYMBOL.lower()][["date","daily_return"]]
@@ -132,7 +148,7 @@ def main():
 
     # 7) Final selection & normalization for merges downstream
     out_cols = [
-        "date","symbol","open","high","low","close","volume",
+        "date","symbol","open","high","low","AdjClose","volume",
         "daily_return","daily_volatility",
         "market_return","beta","alpha",
         "idiosyn_return","idiosyn_volatility",

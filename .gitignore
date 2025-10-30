@@ -62,3 +62,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+
+# Temporary test scripts (local)
+.tmp_spy_fallback.py
+.tmp_check_impact.py

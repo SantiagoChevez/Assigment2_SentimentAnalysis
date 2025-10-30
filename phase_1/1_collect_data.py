@@ -9,6 +9,39 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
 ### -----------------------------------------Stock Data Collection ----------------------------------------- ###
+
+def try_fetch_spy_from_stooq(start_date: str, end_date: str):
+    """Fallback if yfinance fails: fetch SPY daily data from Stooq and return rows."""
+    import pandas as pd
+    url = "https://stooq.com/q/d/l/?s=spy.us&i=d"  # SPY from Stooq
+    try:
+        df = pd.read_csv(url)
+        # Normalize columns to Yahoo-like names
+        df.rename(columns={
+            "Date": "date", "Open": "Open", "High": "High",
+            "Low": "Low", "Close": "Close", "Volume": "Volume"
+        }, inplace=True)
+        df["date"] = pd.to_datetime(df["date"])
+        mask = (df["date"] >= pd.to_datetime(start_date)) & (df["date"] < pd.to_datetime(end_date))
+        df = df.loc[mask].sort_values("date")
+        if df.empty:
+            return []
+        rows = []
+        for _, r in df.iterrows():
+            rows.append({
+                "symbol": "s&p",  # map SPY -> s&p for our pipeline
+                "date": r["date"].date().isoformat(),
+                "open": float(r.get("Open", float("nan"))),
+                "high": float(r.get("High", float("nan"))),
+                "low": float(r.get("Low", float("nan"))),
+                "close": float(r.get("Close", float("nan"))),
+                "volume": int(r.get("Volume", 0) if pd.notna(r.get("Volume", None)) else 0),
+            })
+        return rows
+    except Exception:
+        return []
+
+
 def get_symbols_from_news_datasets():
     news_datasets = [
         'news_datasets/analyst_ratings.csv',
@@ -144,7 +177,8 @@ def _process_download_df(df: pd.DataFrame, batch: Iterable[str], all_data: Dict[
             for idx, r in sym_df.iterrows():
                 rows.append({
                     'date': idx.date().isoformat(),
-                    'symbol': 's&p' if sym == '^GSPC' else sym,
+                    'symbol': 's&p' if sym in ('^GSPC', 'SPY') else sym,
+                    # 'symbol': 's&p' if sym == '^GSPC' else sym,
                     'open': float(r.get('Open', float('nan'))),
                     'high': float(r.get('High', float('nan'))),
                     'low': float(r.get('Low', float('nan'))),
@@ -166,7 +200,8 @@ def _process_download_df(df: pd.DataFrame, batch: Iterable[str], all_data: Dict[
                 for idx, r in sym_df.iterrows():
                     rows.append({
                         'date': idx.date().isoformat(),
-                        'symbol': 's&p' if sym == '^GSPC' else sym,
+                        'symbol': 's&p' if sym in ('^GSPC', 'SPY') else sym,
+                        # 'symbol': 's&p' if sym == '^GSPC' else sym,
                         'open': float(r.get('Open', float('nan'))),
                         'high': float(r.get('High', float('nan'))),
                         'low': float(r.get('Low', float('nan'))),
@@ -188,7 +223,8 @@ def _process_download_df(df: pd.DataFrame, batch: Iterable[str], all_data: Dict[
                 for idx, r in sym_df.iterrows():
                     rows.append({
                         'date': idx.date().isoformat(),
-                        'symbol': 's&p' if sym == '^GSPC' else sym,
+                        'symbol': 's&p' if sym in ('^GSPC', 'SPY') else sym,
+                        # 'symbol': 's&p' if sym == '^GSPC' else sym,
                         'open': float(r.iloc[0]) if len(r) > 0 else float('nan'),
                         'high': float(r.iloc[1]) if len(r) > 1 else float('nan'),
                         'low': float(r.iloc[2]) if len(r) > 2 else float('nan'),
@@ -585,13 +621,95 @@ if __name__ == "__main__":
     # Limit to 500 (in case intersection is larger)
     allowed_list = sorted(list(allowed_set))[:500]
 
+    # Ensure a market proxy is included (prefer ^GSPC, else SPY)
+    market_candidates = ['^GSPC', 'SPY']
+    allowed_list = [m for m in market_candidates if m not in allowed_list] + allowed_list
+    
+    # Add S&P 500 index (^GSPC) so it’s labeled as "s&p" in the CSV
+    # allowed_list = ['^GSPC'] + allowed_list
+    
+    
+    
     if not allowed_list:
         print("No overlapping symbols between news datasets and S&P500 (or no symbols available). Exiting.")
     else:
         print(f"Proceeding with {len(allowed_list)} symbols (intersection with S&P500). Downloading historical data from {start} to {end}...")
         get_stock_data(allowed_list, start_date=start, end_date=end, csv_path="datasets/historical_prices.csv")
 
-        # Finally, fetch news only for the allowed symbols and date window
-        print("WEB SCRAPING (news collection for selected symbols)")
+    # Ensure the saved historical prices CSV contains a market series labelled 's&p'.
+    # If Yahoo failed to return ^GSPC or SPY, fetch SPY from Stooq and append/create the CSV.
+    hp = "datasets/historical_prices.csv"
+    # Helper: common market id variants we treat as satisfying the presence of a market series
+    market_variants = {"^gspc", "spy", "s&p"}
+
+    if os.path.exists(hp):
+        df_hp = pd.read_csv(hp, dtype=str)
+        # Normalize symbol column for presence checks
+        has_symbol_col = "symbol" in df_hp.columns
+        present_symbols = set()
+        if has_symbol_col:
+            present_symbols = set(x.lower().strip() for x in df_hp["symbol"].astype(str).unique())
+
+        # If none of the expected market identifiers are present, attempt fallback
+        if not (present_symbols & market_variants):
+            print("Market series (^GSPC or SPY) not found in CSV — attempting Stooq SPY fallback as 's&p'.")
+            rows = try_fetch_spy_from_stooq(start, end)
+            if rows:
+                df_rows = pd.DataFrame(rows, columns=['symbol', 'date', 'open', 'high', 'low', 'close', 'volume'])
+
+                # Align close column name with existing CSV if needed (some runs use 'AdjClose')
+                target_close_col = 'close'
+                if 'close' not in df_hp.columns and 'AdjClose' in df_hp.columns:
+                    target_close_col = 'AdjClose'
+                    df_rows.rename(columns={'close': 'AdjClose'}, inplace=True)
+
+                # Avoid duplicating rows: drop any rows whose (symbol,date) already exist in df_hp
+                if has_symbol_col and not df_hp.empty:
+                    existing_pairs = set(zip(df_hp['symbol'].astype(str).str.lower(), df_hp['date'].astype(str)))
+                    to_append = []
+                    for _, r in df_rows.iterrows():
+                        key = (str(r['symbol']).lower(), str(r['date']))
+                        if key not in existing_pairs:
+                            to_append.append(r)
+                    if to_append:
+                        df_append = pd.DataFrame(to_append)
+                        df_new = pd.concat([df_hp, df_append], ignore_index=True, sort=False)
+                        # Keep a consistent column order where possible
+                        cols = list(df_new.columns)
+                        df_new.sort_values(['symbol', 'date'], inplace=True, ignore_index=True)
+                        df_new.to_csv(hp, index=False)
+                        print(f"Appended Stooq SPY as 's&p' to {hp} ({len(df_append)} rows).")
+                    else:
+                        print("Stooq SPY rows already present in CSV (no append needed).")
+                else:
+                    # CSV has no symbol column or is empty; just append (safe fallback)
+                    df_new = pd.concat([df_hp, df_rows], ignore_index=True, sort=False)
+                    df_new.sort_values(['symbol', 'date'], inplace=True, ignore_index=True)
+                    df_new.to_csv(hp, index=False)
+                    print(f"Appended Stooq SPY as 's&p' to {hp}.")
+            else:
+                print("Stooq fallback also unavailable — Step 3 will not work without a market series 's&p'.")
+        else:
+            # Market series already present; nothing to do
+            print("Market series present in historical CSV — no Stooq fallback required.")
+    else:
+        # CSV file doesn't exist — try to create it from Stooq SPY rows
+        print("No historical CSV found; attempting to create one from Stooq SPY fallback (symbol 's&p').")
+        rows = try_fetch_spy_from_stooq(start, end)
+        if rows:
+            df_rows = pd.DataFrame(rows, columns=['symbol', 'date', 'open', 'high', 'low', 'close', 'volume'])
+            out_dir = os.path.dirname(hp)
+            if out_dir and not os.path.exists(out_dir):
+                os.makedirs(out_dir, exist_ok=True)
+            df_rows.sort_values(['symbol', 'date'], inplace=True, ignore_index=True)
+            df_rows.to_csv(hp, index=False)
+            print(f"Created {hp} from Stooq fallback with symbol 's&p' ({len(df_rows)} rows).")
+        else:
+            print("Stooq fallback unavailable — could not create historical_prices.csv. Step 3 will fail without a market series 's&p'.")
+
+    # Finally, fetch news only for the allowed symbols and date window
+    print("WEB SCRAPING (news collection for selected symbols)")
+    if os.path.exists('news_datasets/analyst_ratings.csv') and os.path.exists('news_datasets/headlines.csv'):
         get_news_data(allowed_symbols=set(allowed_list), start_date=start, end_date=end)
-    
+    else:
+        print("Skipping news collection: news_datasets/*.csv not found locally.")
