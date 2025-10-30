@@ -4,7 +4,8 @@ news_datasets/headlines.csv
 *.csv
 
 # Python
-__pycache__/
+**/__pycache__/
+**/__pycache__
 *.py[cod]
 *$py.class
 *.so
@@ -29,6 +30,7 @@ wheels/
 .ipynb_checkpoints
 
 # Virtual Environment
+.venv/
 venv/
 env/
 ENV/
