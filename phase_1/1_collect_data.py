@@ -43,10 +43,7 @@ def try_fetch_spy_from_stooq(start_date: str, end_date: str):
 
 
 def get_symbols_from_news_datasets():
-    news_datasets = [
-        'news_datasets/analyst_ratings.csv',
-        'news_datasets/headlines.csv',
-    ]
+    """Return all symbols from news datasets (no filtering)."""
     return get_symbols_from_news_datasets_filtered(None)
 
 
@@ -92,9 +89,7 @@ def get_symbols_from_news_datasets_filtered(allowed_symbols: Set[str] = None) ->
 
 
 def get_sp500_symbols() -> Set[str]:
-    """Attempt to obtain the S&P 500 constituent symbols.
-
-    """
+    """Attempt to obtain the S&P 500 constituent symbols from multiple sources."""
     sources_tried = []
     # 1) Yahoo Finance components page
     try:
@@ -178,7 +173,6 @@ def _process_download_df(df: pd.DataFrame, batch: Iterable[str], all_data: Dict[
                 rows.append({
                     'date': idx.date().isoformat(),
                     'symbol': 's&p' if sym in ('^GSPC', 'SPY') else sym,
-                    # 'symbol': 's&p' if sym == '^GSPC' else sym,
                     'open': float(r.get('Open', float('nan'))),
                     'high': float(r.get('High', float('nan'))),
                     'low': float(r.get('Low', float('nan'))),
@@ -201,7 +195,6 @@ def _process_download_df(df: pd.DataFrame, batch: Iterable[str], all_data: Dict[
                     rows.append({
                         'date': idx.date().isoformat(),
                         'symbol': 's&p' if sym in ('^GSPC', 'SPY') else sym,
-                        # 'symbol': 's&p' if sym == '^GSPC' else sym,
                         'open': float(r.get('Open', float('nan'))),
                         'high': float(r.get('High', float('nan'))),
                         'low': float(r.get('Low', float('nan'))),
@@ -224,7 +217,6 @@ def _process_download_df(df: pd.DataFrame, batch: Iterable[str], all_data: Dict[
                     rows.append({
                         'date': idx.date().isoformat(),
                         'symbol': 's&p' if sym in ('^GSPC', 'SPY') else sym,
-                        # 'symbol': 's&p' if sym == '^GSPC' else sym,
                         'open': float(r.iloc[0]) if len(r) > 0 else float('nan'),
                         'high': float(r.iloc[1]) if len(r) > 1 else float('nan'),
                         'low': float(r.iloc[2]) if len(r) > 2 else float('nan'),
@@ -367,7 +359,7 @@ def get_news_data(allowed_symbols: Set[str] = None, start_date: str = None, end_
     processed_map: Dict[str, str] = {}
     cols = ['id', 'headline', 'URL', 'article', 'publisher', 'date', 'symbol']
     if csv_exists:
-        #Resume where it left off
+        # Resume where it left off
         try:
             existing_cols = pd.read_csv(csv_path, nrows=0).columns.tolist()
             # If existing columns don't match sample, back up the old file and start a fresh CSV
@@ -594,8 +586,7 @@ def get_news_data(allowed_symbols: Set[str] = None, start_date: str = None, end_
                     processed_urls.add(r['URL'])
                 next_id += len(buffer)
                 buffer = []
-        
-    
+
 
 if __name__ == "__main__":
     # Desired flow:
@@ -624,12 +615,6 @@ if __name__ == "__main__":
     # Ensure a market proxy is included (prefer ^GSPC, else SPY)
     market_candidates = ['^GSPC', 'SPY']
     allowed_list = [m for m in market_candidates if m not in allowed_list] + allowed_list
-    
-    # Add S&P 500 index (^GSPC) so it’s labeled as "s&p" in the CSV
-    # allowed_list = ['^GSPC'] + allowed_list
-    
-    
-    
     if not allowed_list:
         print("No overlapping symbols between news datasets and S&P500 (or no symbols available). Exiting.")
     else:
@@ -647,7 +632,7 @@ if __name__ == "__main__":
         # Normalize symbol column for presence checks
         has_symbol_col = "symbol" in df_hp.columns
         present_symbols = set()
-        if has_symbol_col:
+        if has_symbol_col and not df_hp.empty:
             present_symbols = set(x.lower().strip() for x in df_hp["symbol"].astype(str).unique())
 
         # If none of the expected market identifiers are present, attempt fallback
@@ -658,9 +643,7 @@ if __name__ == "__main__":
                 df_rows = pd.DataFrame(rows, columns=['symbol', 'date', 'open', 'high', 'low', 'close', 'volume'])
 
                 # Align close column name with existing CSV if needed (some runs use 'AdjClose')
-                target_close_col = 'close'
                 if 'close' not in df_hp.columns and 'AdjClose' in df_hp.columns:
-                    target_close_col = 'AdjClose'
                     df_rows.rename(columns={'close': 'AdjClose'}, inplace=True)
 
                 # Avoid duplicating rows: drop any rows whose (symbol,date) already exist in df_hp
@@ -674,8 +657,6 @@ if __name__ == "__main__":
                     if to_append:
                         df_append = pd.DataFrame(to_append)
                         df_new = pd.concat([df_hp, df_append], ignore_index=True, sort=False)
-                        # Keep a consistent column order where possible
-                        cols = list(df_new.columns)
                         df_new.sort_values(['symbol', 'date'], inplace=True, ignore_index=True)
                         df_new.to_csv(hp, index=False)
                         print(f"Appended Stooq SPY as 's&p' to {hp} ({len(df_append)} rows).")

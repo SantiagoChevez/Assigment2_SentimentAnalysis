@@ -8,14 +8,35 @@ import sys
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from collections import Counter
 
-NEGATION_MODE = 'dependency'
+NEGATION_MODE = 'dependency'  # Options: 'dependency' (requires spaCy parser) or 'heuristic'
 
 
 
 def group_news_by_3_days():
+    """
+    Aggregate news articles by symbol into 3-day rolling windows.
+
+    For each symbol and date, aggregates news from the current day and the previous 2 days.
+    This creates temporal context for sentiment analysis. Text length is limited to prevent
+    memory issues during processing.
+
+    Input:  datasets/all_news.csv
+    Output: datasets/aggregated_news.csv
+
+    Raises:
+    -------
+    FileNotFoundError
+        If all_news.csv is not found.
+    """
+    MAX_ARTICLE_LEN = 100000
+    MAX_TEXT_LEN = 200000
+    MAX_AGGREGATED_LEN = 500000
+
     df = pd.read_csv('datasets/all_news.csv', parse_dates=['date'])
     df = df.sort_values(["date"])
-    df["full_text"] = df["headline"].fillna('') + " " + df["article"].fillna('')
+
+    df["article_limited"] = df["article"].fillna('').astype(str).str[:MAX_ARTICLE_LEN]
+    df["full_text"] = df["headline"].fillna('') + " " + df["article_limited"]
     aggregated_list = []
 
     for symbol, group in df.groupby("symbol"):
@@ -23,13 +44,16 @@ def group_news_by_3_days():
         for i in range(len(group)):
             start_idx = max(0, i - 2)
             subset = group.loc[start_idx:i, "full_text"]
-            aggregated_text = " ".join(subset)
-            # Ensure we store only the date part in ISO format (YYYY-MM-DD)
+            limited_texts = [str(text)[:MAX_TEXT_LEN] if len(str(text)) > MAX_TEXT_LEN else str(text) for text in subset]
+            aggregated_text = " ".join(limited_texts)
+            if len(aggregated_text) > MAX_AGGREGATED_LEN:
+                aggregated_text = aggregated_text[:MAX_AGGREGATED_LEN]
+
             try:
                 the_date = pd.to_datetime(group.loc[i, "date"]).date().isoformat()
             except Exception:
-                # fallback: coerce to string and strip
                 the_date = str(group.loc[i, "date"]).strip()
+
             aggregated_list.append({
                 "date": the_date,
                 "symbol": symbol,
@@ -38,22 +62,37 @@ def group_news_by_3_days():
 
     aggregated_df = pd.DataFrame(aggregated_list)
     aggregated_df.to_csv("datasets/aggregated_news.csv", index=False)
-    
-    
-    
+
+
 def preprocess_news():
-    
+    """
+    Preprocess news text: remove HTML, normalize, handle negation.
+
+    Performs comprehensive text preprocessing:
+    - Strips HTML tags and extracts visible text
+    - Normalizes unicode, removes URLs and emails
+    - Handles negation using dependency parsing (if available) or heuristic method
+    - Lemmatizes tokens and removes stopwords
+    - Marks negated tokens with 'NOT_' prefix
+
+    Input:  datasets/aggregated_news.csv
+    Output: datasets/aggregated_news.csv (overwritten with preprocessed text)
+
+    Raises:
+    -------
+    FileNotFoundError
+        If aggregated_news.csv is not found.
+    """
     src = 'datasets/aggregated_news.csv'
     if not os.path.exists(src):
         raise FileNotFoundError(f"Missing aggregated news CSV: {src}")
 
     df = pd.read_csv(src)
 
-    # Helper: strip HTML to visible text
     def extract_text(html_or_text: str) -> str:
+        """Extract visible text from HTML or return plain text."""
         if not isinstance(html_or_text, str):
             return ''
-        # quick check for HTML
         if '<' in html_or_text and '>' in html_or_text:
             try:
                 return BeautifulSoup(html_or_text, 'html.parser').get_text(separator=' ')
@@ -61,46 +100,38 @@ def preprocess_news():
                 return re.sub(r'<[^>]+>', ' ', html_or_text)
         return html_or_text
 
-    # Normalize and clean basic noise
     URL_RE = re.compile(r'https?://\S+|www\.\S+')
     EMAIL_RE = re.compile(r'\S+@\S+')
 
     def normalize(text: str) -> str:
+        """Normalize text: unicode, remove URLs/emails, clean whitespace."""
         if not text:
             return ''
         text = unicodedata.normalize('NFKC', text)
         text = URL_RE.sub(' ', text)
         text = EMAIL_RE.sub(' ', text)
-        # remove stray control chars
         text = re.sub(r'[\r\t\x0b\x0c]', ' ', text)
         text = re.sub(r'\s+', ' ', text).strip()
         return text
 
-    # Try to load spaCy but do not require the parser by default (heuristic mode uses tokenizer/lemmatizer only)
     try:
-        # load model without parser by default; parser is needed for dependency-based negation
         nlp = spacy.load('en_core_web_sm', disable=['parser'])
         has_spacy = True
     except Exception:
         nlp = None
         has_spacy = False
 
-    # Simple negation set
     NEGATIONS = set(['no', 'not', "n't", 'never', 'none', 'nothing', 'neither', 'nor'])
-    NEGATION_SCOPE = 3  # mark up to this many content tokens after a negation 
+    NEGATION_SCOPE = 3
 
     cleaned_texts = []
-
-    # Decide negation strategy (now fixed globally via NEGATION_MODE)
     negation_mode = NEGATION_MODE
 
     if negation_mode == 'dependency' and has_spacy:
-        # We need the parser to find dependency relations for negation. Try to enable it.
         try:
             nlp_parser = spacy.load('en_core_web_sm')
             use_dependency = True
         except Exception:
-            # Fall back to heuristic if parser not available
             print("[warn] spaCy parser not available; falling back to heuristic negation", file=sys.stderr)
             nlp_parser = None
             use_dependency = False
@@ -108,20 +139,16 @@ def preprocess_news():
         use_dependency = False
 
     if use_dependency and nlp_parser is not None:
-        # Dependency-based negation: mark tokens that depend on negation words via a limited traversal.
+        # Dependency-based negation: use syntactic dependencies to identify negated tokens
         texts = (extract_text(x) for x in df['news'].astype(str).tolist())
         norm_texts = [normalize(t) for t in texts]
         for doc in nlp_parser.pipe(norm_texts, batch_size=50):
             out_tokens = []
-            # Identify negation tokens in the doc (by lemma or text)
             neg_indices = set([tok.i for tok in doc if tok.lemma_.lower() in NEGATIONS or tok.text.lower() in NEGATIONS])
-            # For performance, build a mapping of token -> whether it's negated
             negated = [False] * len(doc)
             for ni in neg_indices:
-                # Mark children of the negation token as negated (shallow) and token head and siblings
                 for child in doc[ni].children:
                     negated[child.i] = True
-                # also mark the head (word being modified) if within sentence
                 head = doc[ni].head
                 if head is not None:
                     negated[head.i] = True
@@ -135,7 +162,7 @@ def preprocess_news():
                     out_tokens.append(lemma)
             cleaned_texts.append(' '.join(out_tokens))
     else:
-        # Heuristic: use tokenizer/lemmatizer if we have spaCy (without parser), else fallback to regex tokens
+        # Heuristic negation: mark N tokens after negation words
         if has_spacy and nlp is not None:
             texts = (extract_text(x) for x in df['news'].astype(str).tolist())
             norm_texts = [normalize(t) for t in texts]
@@ -146,16 +173,13 @@ def preprocess_news():
                     if token.is_space:
                         continue
                     if token.is_punct:
-                        # punctuation ends any active negation scope
                         neg_remaining = 0
                         continue
                     tok_lower = token.text.lower()
                     if tok_lower in NEGATIONS:
-                        # start negation scope for the next content tokens (do not mark the negation token itself)
                         neg_remaining = NEGATION_SCOPE
                         continue
                     if token.is_stop:
-                        # skip stopwords entirely
                         continue
                     lemma = token.lemma_.lower()
                     if neg_remaining > 0:
@@ -165,7 +189,7 @@ def preprocess_news():
                         out_tokens.append(lemma)
                 cleaned_texts.append(' '.join(out_tokens))
         else:
-            # Fallback: naive tokenization when spaCy is not available
+            # Fallback: simple regex tokenization without spaCy
             for raw in df['news'].astype(str).tolist():
                 t = normalize(extract_text(raw))
                 toks = re.findall(r"\b\w+\b", t.lower())
@@ -175,7 +199,6 @@ def preprocess_news():
                     if w in NEGATIONS:
                         neg_remaining = NEGATION_SCOPE
                         continue
-                    # fallback: do not remove stopwords here; mark negated content tokens
                     if neg_remaining > 0:
                         out.append('NOT_' + w)
                         neg_remaining -= 1
@@ -183,9 +206,7 @@ def preprocess_news():
                         out.append(w)
                 cleaned_texts.append(' '.join(out))
 
-    # Update dataframe and overwrite CSV; sort by date descending (most recent first)
     df['news'] = cleaned_texts
-    # If there is a date column, try to parse and sort; otherwise skip sorting
     if 'date' in df.columns:
         try:
             df['date'] = pd.to_datetime(df['date'])
@@ -194,30 +215,36 @@ def preprocess_news():
             pass
     df.to_csv(src, index=False)
     print(f"Preprocessing complete: updated {src} ({len(df)} rows)")
-    
 
 def merge_impact_scores(out_df, impact_candidates=None):
     """
-    Normalize keys and merge impact_score from the first available impact CSV.
+    Merge impact scores from historical prices impact file into vectorized news DataFrame.
 
-    Parameters
-    - out_df: DataFrame with at least 'symbol' and 'date' columns
-    - impact_candidates: optional list of file paths to consider (ordered)
+    Normalizes symbol and date columns for matching, then performs left join on (symbol, date).
+    Tries multiple candidate files in order until one is found.
 
-    Returns merged DataFrame with an 'impact_score' column (may be NA if no file found)
+    Parameters:
+    -----------
+    out_df : pd.DataFrame
+        DataFrame with at least 'symbol' and 'date' columns to merge scores into.
+    impact_candidates : list of str, optional
+        Ordered list of CSV file paths to try. Defaults to standard impact file paths.
+
+    Returns:
+    --------
+    pd.DataFrame
+        DataFrame with added 'impact_score' column. Values may be NA if no matching file found.
     """
     if impact_candidates is None:
         impact_candidates = ['datasets/historical_prices_impact.csv', 'datasets/sample_historical_prices_impact.csv']
 
     out = out_df.copy()
-    # normalize out keys
     out['symbol'] = out['symbol'].astype(str).str.strip().str.upper()
-    # try parsing date; if there are timezone offsets or timestamps, try to extract date portion
     out_dates = pd.to_datetime(out['date'], errors='coerce')
-    # For entries that failed to parse, try to extract an ISO-like date substring via regex
     if out_dates.isna().any():
         import re as _re
         def _extract_date(s):
+            """Extract date from string using regex patterns."""
             if not isinstance(s, str):
                 return s
             m = _re.search(r"(\d{4}-\d{2}-\d{2})", s)
@@ -225,7 +252,6 @@ def merge_impact_scores(out_df, impact_candidates=None):
                 return m.group(1)
             m2 = _re.search(r"(\d{2}/\d{2}/\d{4})", s)
             if m2:
-                # convert dd/mm/YYYY or mm/dd/YYYY ambiguous; leave for pandas to coerce
                 return m2.group(1)
             return s
         out['date'] = out['date'].astype(str).apply(_extract_date)
@@ -243,7 +269,6 @@ def merge_impact_scores(out_df, impact_candidates=None):
             except Exception:
                 imp = pd.read_csv(p, dtype=str, low_memory=False)
 
-            # normalize impact keys
             if 'symbol' in imp.columns:
                 imp['symbol'] = imp['symbol'].astype(str).str.strip().str.upper()
             if 'date' in imp.columns:
@@ -256,24 +281,36 @@ def merge_impact_scores(out_df, impact_candidates=None):
                 imp['impact_score'] = pd.NA
 
             out = out.merge(imp[['symbol', 'date', 'impact_score']], on=['symbol', 'date'], how='left')
-            # coalesce in case of duplicate columns
             if 'impact_score_x' in out.columns and 'impact_score_y' in out.columns:
                 out['impact_score'] = out['impact_score_y'].fillna(out['impact_score_x'])
                 out.drop(['impact_score_x', 'impact_score_y'], axis=1, inplace=True)
 
-            print(f"Merged impact scores from {p} into DTM output")
+            print(f"Merged impact scores from {p}")
             return out
 
-    # no impact file found -> create empty column and warn
     out['impact_score'] = pd.NA
     print("No impact CSV found; `impact_score` will be empty. Placeholders emitted for later merging.")
     return out
 
-    
-    
-    
-def vectorize_dtm():
 
+def vectorize_dtm():
+    """
+    Create Document-Term Matrix (DTM) vectorization of news text.
+
+    Uses CountVectorizer to create bag-of-words features. Automatically reduces
+    feature count for large datasets to manage memory. Merges impact scores
+    and saves to CSV.
+
+    Input:  datasets/aggregated_news.csv
+    Output: datasets/vectorized_news_dtm.csv
+
+    Raises:
+    -------
+    FileNotFoundError
+        If aggregated_news.csv is not found.
+    KeyError
+        If required columns are missing.
+    """
     src = 'datasets/aggregated_news.csv'
     if not os.path.exists(src):
         raise FileNotFoundError(f"Missing aggregated news CSV: {src}")
@@ -281,7 +318,6 @@ def vectorize_dtm():
     if 'symbol' not in df.columns:
         raise KeyError(f"Input CSV {src} missing required column 'symbol'. Columns: {list(df.columns)}")
 
-    # Auto-reduce features/sample if dataset is too large
     max_features = 5000
     min_df = 2
     if len(df) > 100_000:
@@ -296,21 +332,33 @@ def vectorize_dtm():
     out = pd.DataFrame({
         'symbol': df['symbol'],
         'date': df['date'],
-        # store the raw vector as a stringified list so it matches expected sample format
         'news_vector': [str(v) for v in vectors]
     })
-    # attach impact scores (if available) and write CSV
-    out = merge_impact_scores(out, ) #'datasets/historical_prices_impact.csv'
+    out = merge_impact_scores(out)
     out = out[['symbol', 'date', 'news_vector', 'impact_score']]
     dtm_src = 'datasets/vectorized_news_dtm.csv'
     out.to_csv(dtm_src, index=False)
     print(f"Document-term matrix saved to {dtm_src} ({out.shape[0]} rows, columns={list(out.columns)})")
-    
-    
-    
+
 
 def vectorize_tfidf():
+    """
+    Create TF-IDF vectorization of news text.
 
+    Uses TfidfVectorizer to create term frequency-inverse document frequency features.
+    Automatically reduces feature count for large datasets. Merges impact scores
+    and saves to CSV.
+
+    Input:  datasets/aggregated_news.csv
+    Output: datasets/vectorized_news_tfidf.csv
+
+    Raises:
+    -------
+    FileNotFoundError
+        If aggregated_news.csv is not found.
+    KeyError
+        If required columns are missing.
+    """
     src = 'datasets/aggregated_news.csv'
     if not os.path.exists(src):
         raise FileNotFoundError(f"Missing aggregated news CSV: {src}")
@@ -334,64 +382,70 @@ def vectorize_tfidf():
         'date': df['date'],
         'news_vector': [str(v) for v in vectors]
     })
-    out = merge_impact_scores(out,) #'datasets/historical_prices_impact.csv'
+    out = merge_impact_scores(out)
     out = out[['symbol', 'date', 'news_vector', 'impact_score']]
     dst = 'datasets/vectorized_news_tfidf.csv'
     out.to_csv(dst, index=False)
     print(f"TF-IDF matrix saved to {dst} ({out.shape[0]} rows)")
 
+
 def vectorize_curated():
     """
-    Curated feature matrix: counts (or presence) of chosen sentiment-bearing words.
+    Create curated feature vectorization using sentiment-bearing keywords.
+
+    Counts occurrences of specific sentiment words (and their negated forms) to create
+    a 10-dimensional feature vector. Words: buy, sell, beat, miss, guidance, dividend,
+    deal, cut, upgrade, plunge. Handles both regular and negated forms (e.g., 'buy' and 'NOT_buy').
+
+    Input:  datasets/aggregated_news.csv
+    Output: datasets/vectorized_news_curated.csv
+
+    Raises:
+    -------
+    FileNotFoundError
+        If aggregated_news.csv is not found.
     """
     src = 'datasets/aggregated_news.csv'
     if not os.path.exists(src):
         raise FileNotFoundError(f"Missing aggregated news CSV: {src}")
     df = pd.read_csv(src)
 
-    # Use exactly the user-provided top 10 tokens as features
     curated_words = ['buy', 'sell', 'beat', 'miss', 'guidance', 'dividend', 'deal', 'cut', 'upgrade', 'plunge']
-    
+
     def token_counts(text: str) -> Counter:
+        """Count token occurrences in text."""
         toks = str(text).split()
         return Counter(toks)
 
     vectors = []
-    cat_doc_hits = [0]*len(curated_words)
     for text in df['news'].astype(str).tolist():
         cnt = token_counts(text)
         vec = []
-        for idx, t in enumerate(curated_words):
-            s = cnt.get(t, 0) + cnt.get(f"NOT_{t}", 0)
-            vec.append(int(s))
-            if s > 0:
-                cat_doc_hits[idx] += 1
+        for t in curated_words:
+            count = cnt.get(t, 0) + cnt.get(f"NOT_{t}", 0)
+            vec.append(int(count))
         vectors.append(vec)
-
-    
 
     out = pd.DataFrame({
         'symbol': df['symbol'],
         'date': df['date'],
         'news_vector': [str(v) for v in vectors]
     })
-    out = merge_impact_scores(out,) #'datasets/historical_prices_impact.csv'
+    out = merge_impact_scores(out)
     out = out[['symbol', 'date', 'news_vector', 'impact_score']]
     dst = 'datasets/vectorized_news_curated.csv'
     out.to_csv(dst, index=False)
     print(f"Curated feature matrix saved to {dst} ({out.shape[0]} rows)")
 
-    # (no duplicated writes here — each vectorizer writes its own CSV earlier)
-    
+
 if __name__ == "__main__":
-    print(f"Running pipeline with fixed negation mode: {NEGATION_MODE}")
+    # Execute the full preprocessing and vectorization pipeline:
+    # 1) Aggregate news by 3-day windows
+    # 2) Preprocess text (HTML removal, normalization, negation handling)
+    # 3) Vectorize using curated features
+    # 4) Merge impact scores
+    print(f"Running pipeline with negation mode: {NEGATION_MODE}")
     group_news_by_3_days()
-    print(2)
     preprocess_news()
-    print(3)
-    #vectorize_dtm()
-    print(4)
-    #vectorize_tfidf()
-    print(5)
     vectorize_curated()
     print("Vectorization pipeline complete.")

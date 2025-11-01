@@ -1,7 +1,11 @@
 # Data files
 news_datasets/analyst_ratings.csv
 news_datasets/headlines.csv
+datasets/
 *.csv
+
+# Test files
+phase_1/tests/
 
 # Python
 **/__pycache__/
