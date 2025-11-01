@@ -410,7 +410,7 @@ def vectorize_curated():
         raise FileNotFoundError(f"Missing aggregated news CSV: {src}")
     df = pd.read_csv(src)
 
-    curated_words = ['buy', 'sell', 'beat', 'miss', 'guidance', 'dividend', 'deal', 'cut', 'upgrade', 'plunge']
+    curated_words = ['buy', 'bullish', 'beat', 'spike', 'profit', 'sell', 'bearish', 'decline', 'weak', 'loss']
 
     def token_counts(text: str) -> Counter:
         """Count token occurrences in text."""
