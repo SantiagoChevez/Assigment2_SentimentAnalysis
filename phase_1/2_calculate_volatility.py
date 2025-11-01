@@ -159,7 +159,9 @@ def calculate_volatility():
     Returns:
     float: The calculated volatility in csv format.
     """
-    df = pd.read_csv('../datasets/historical_prices.csv')
+    # df = pd.read_csv('../datasets/historical_prices.csv')
+    df = pd.read_csv('datasets/historical_prices.csv')
+
 
     #Ensure the dataframe is sorted by symbol and date
     df.sort_values(['symbol', 'date'], inplace=True)
@@ -177,6 +179,8 @@ if __name__ == "__main__":
     df_result = calculate_volatility()
     
     # Save to CSV file
-    output_path = '../datasets/historical_prices_with_volatility.csv'
+    # output_path = '../datasets/historical_prices_with_volatility.csv'
+    output_path = 'datasets/historical_prices_with_volatility.csv'
+
     df_result.to_csv(output_path, index=False)
     print(f"\n✓ Saved results to: {output_path}")
