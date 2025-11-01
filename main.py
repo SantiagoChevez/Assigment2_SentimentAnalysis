@@ -1,17 +1,17 @@
 # This script is used to print the first 10 rows of the historical prices csv
-# import pandas as pd
-# for chunk in pd.read_csv("datasets/historical_prices.csv", usecols=["symbol"], chunksize=100000):
-#     print(chunk["symbol"].unique())
-
 import pandas as pd
+for chunk in pd.read_csv("datasets/historical_prices.csv.backup", usecols=["symbol"], chunksize=100000):
+    print(chunk["symbol"].unique())
 
-path0 = 'datasets/historical_prices.csv.backup'
-df0 = pd.read_csv(path0)
-print(f"This is the historical prices csv original: \n{df0.head(10)}")
+# import pandas as pd
 
-path1 = 'datasets/historical_prices.csv'
-df1 = pd.read_csv(path1)
-print(f"This is the historical prices csv without AdjClose: \n{df1.head(10)}")
+# path0 = 'datasets/historical_prices.csv.backup'
+# df0 = pd.read_csv(path0)
+# print(f"This is the historical prices csv original: \n{df0.head(10)}")
+
+# path1 = 'datasets/historical_prices.csv'
+# df1 = pd.read_csv(path1)
+# print(f"This is the historical prices csv without AdjClose: \n{df1.head(10)}")
 
 # path2 = 'datasets/historical_prices_with_volatility.csv'
 # df2 = pd.read_csv(path2)
