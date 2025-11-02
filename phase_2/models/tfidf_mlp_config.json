@@ -1,6 +1,6 @@
 {
   "input_dim": 1000,
-  "output_dim": 7,
+  "output_dim": 3,
   "hidden_layers": [
     768,
     512,

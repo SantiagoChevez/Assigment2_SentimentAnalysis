@@ -25,6 +25,10 @@ class MLPConfig:
     epochs: int = 50                    
     optimizer: OptimizerName = "adam"   
     weight_decay: float = 1e-4                         
+    # Whether to use a WeightedRandomSampler to balance batches during training
+    use_weighted_sampler: bool = False
+    # Whether to compute and apply class weights in the loss
+    use_class_weight: bool = True
 
 def get_activation(name) -> nn.Module:
     name = name.lower()
@@ -95,12 +99,13 @@ def create_dtm_model_config(input_dim: int = 5000, num_classes: int = 7) -> MLPC
     
     """
     
+    # Updated defaults (tuned): hidden [512,256], dropout 0.2, lr 1e-3
     return MLPConfig(
         input_dim=input_dim,
         output_dim=num_classes,
-        hidden_layers=[512, 256, 128],
+        hidden_layers=[512, 256],
         activation="relu",
-        dropout=0.3,
+        dropout=0.2,
         learning_rate=1e-3,
         batch_size=64,
         epochs=50,
@@ -114,16 +119,17 @@ def create_tfidf_model_config(input_dim: int = 5000, num_classes: int = 7) -> ML
     Create configuration for TF-IDF classifier.
     
     """
+    # Updated defaults (tuned): keep deep hidden, dropout 0.2, lr 4e-4, adamw
     return MLPConfig(
         input_dim=input_dim,
         output_dim=num_classes,
         hidden_layers=[768, 512, 256, 128],
         activation="gelu",
         dropout=0.2,
-        learning_rate=8e-4,  
+        learning_rate=4e-4,
         batch_size=64,
         epochs=60,
-        optimizer="adamw",  
+        optimizer="adamw",
         weight_decay=1e-4
     )
 
@@ -133,17 +139,18 @@ def create_curated_model_config(input_dim: int = 100, num_classes: int = 7) -> M
     Create configuration for Curated features classifier.
     
     """
+    # Updated defaults (tuned): hidden [256,128], dropout 0.4, lr 5e-4
     return MLPConfig(
         input_dim=input_dim,
         output_dim=num_classes,
         hidden_layers=[256, 128],
         activation="tanh",
         dropout=0.4,
-        learning_rate=1e-3,
-        batch_size=32,  
+        learning_rate=5e-4,
+        batch_size=32,
         epochs=40,
         optimizer="adam",
-        weight_decay=5e-4  
+        weight_decay=5e-4
     )
         
 

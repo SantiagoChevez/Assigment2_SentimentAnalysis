@@ -16,7 +16,7 @@ def calc_daily_log_returns(df):
 
     """
     # First calculate for all symbols using AdjClose
-    df["daily_return"] = df.groupby("symbol")["AdjClose"].transform(
+    df["daily_return"] = df.groupby("symbol")["close"].transform(
         lambda s: np.log(s / s.shift(3))
     )
     
@@ -57,8 +57,23 @@ def market_return(df):
     Returns: none
 
     """
-    market_log_returns = df[df['symbol'] == MARKET_SYMBOL][['date', 'daily_return']]
-    df['market_return'] = df['date'].map(market_log_returns.set_index('date')['daily_return'])
+    # Extract market (S&P) daily returns and build a date->return mapping.
+    # There may be duplicate rows for the market on the same date (rare but possible),
+    # so aggregate by date (mean) to ensure a uniquely-valued index for mapping.
+    market_log_returns = (
+        df[df['symbol'] == MARKET_SYMBOL][['date', 'daily_return']]
+        .dropna(subset=['daily_return'])
+    )
+    if market_log_returns.empty:
+        # No market returns available — create an empty column of NA
+        df['market_return'] = pd.NA
+        return
+
+    # If multiple market entries exist for the same date, take the mean.
+    market_map = market_log_returns.groupby('date')['daily_return'].mean()
+
+    # Map market returns back onto the full dataframe by date
+    df['market_return'] = df['date'].map(market_map)
 
 
 def fit_one(g):

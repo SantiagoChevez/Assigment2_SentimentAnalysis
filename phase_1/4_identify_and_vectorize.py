@@ -236,7 +236,7 @@ def merge_impact_scores(out_df, impact_candidates=None):
         DataFrame with added 'impact_score' column. Values may be NA if no matching file found.
     """
     if impact_candidates is None:
-        impact_candidates = ['datasets/historical_prices_impact.csv', 'datasets/sample_historical_prices_impact.csv']
+        impact_candidates = ['datasets/historical_prices_impact.csv']
 
     out = out_df.copy()
     out['symbol'] = out['symbol'].astype(str).str.strip().str.upper()
@@ -446,6 +446,14 @@ if __name__ == "__main__":
     # 4) Merge impact scores
     print(f"Running pipeline with negation mode: {NEGATION_MODE}")
     group_news_by_3_days()
+    print("Aggregated news by 3-day windows.")
     preprocess_news()
+    print("Preprocessing complete.")
+    print("Starting vectorization...")
+    vectorize_dtm()
+    print("DTM vectorization complete.")
+    vectorize_tfidf()
+    print("TF-IDF vectorization complete.")
     vectorize_curated()
+    print("Curated vectorization complete.")
     print("Vectorization pipeline complete.")

@@ -1,11 +1,10 @@
 {
   "input_dim": 1000,
-  "output_dim": 7,
+  "output_dim": 3,
   "hidden_layers": [
     512,
-    256,
-    128
+    256
   ],
   "activation": "relu",
-  "dropout": 0.3
+  "dropout": 0.2
 }
