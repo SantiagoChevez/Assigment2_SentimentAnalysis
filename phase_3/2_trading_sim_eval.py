@@ -21,42 +21,8 @@ REPO_ROOT = THIS_DIR.parent
 DATASETS_DIR = REPO_ROOT / "datasets"
 
 def get_prices(df):
-	"""Normalize price column into `price` and ensure date parsing.
-
-	This function will look for common price column names (case
-	insensitive) and create a unified `price` column used by the
-	simulator.
-	"""
 	df = df.copy()
-	# look for common price column names (case-insensitive)
-	price_candidates = ['AdjClose', 'adjclose', 'adj_close', 'adj_close', 'Close', 'close']
-	found = None
-	for c in price_candidates:
-		if c in df.columns:
-			found = c
-			break
-	# try a case-insensitive match if exact names weren't found
-	if found is None:
-		cols_lower = {col.lower(): col for col in df.columns}
-		for cand in ['adjclose', 'adj_close', 'close']:
-			if cand in cols_lower:
-				found = cols_lower[cand]
-				break
-	if found is None:
-		# fallback: try any numeric column that looks like a price (last resort)
-		numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-		if len(numeric_cols) > 0:
-			found = numeric_cols[-1]
-		else:
-			raise RuntimeError(f"No price column found in historical prices. Columns: {list(df.columns)}")
-
-	# create normalized price column
-	df['price'] = df[found]
-
-	# ensure date column is datetime if present
-	if 'date' in df.columns:
-		df['date'] = pd.to_datetime(df['date'])
-
+	df['price'] = df['AdjClose'].fillna(df['close'])
 	return df
 
 def process_datasets():
@@ -92,8 +58,15 @@ def run_simulation():
 	if 'date' in df_with_preds.columns:
 		df_with_preds['date'] = pd.to_datetime(df_with_preds['date'])
 
-	# after normalization get_prices(), we expect a unified 'price' column
-	price_col = 'price'
+	# choose price column from prices dataset
+	price_cols = ['AdjClose', 'adjclose', 'adj_close', 'close', 'Close']
+	price_col = None
+	for c in price_cols:
+		if c in df_prices.columns:
+			price_col = c
+			break
+	if price_col is None:
+		raise RuntimeError(f"No known price column found in historical prices. Columns: {list(df_prices.columns)}")
 
 	# merge predictions with prices on symbol + date
 	# Collapse duplicate price rows per (symbol, date) by keeping last occurrence to ensure many-to-one merge
@@ -143,19 +116,8 @@ def run_simulation():
 		# call trading_rules; it returns an int (shares) or None
 		try:
 			decision_shares = trading_rules.trading_rules(stock, balance, owned)
-		except Exception as e:
-			# Surface the exception to help debugging instead of silently
-			# swallowing it. Print traceback and the input that caused it.
-			import traceback
-			print("Exception while calling trading_rules.trading_rules for:", {
-				'symbol': symbol,
-				'date': date,
-				'price': price,
-				'pred_impact_score': stock.get('pred_impact_score'),
-				'balance': balance,
-				'owned': owned,
-			})
-			traceback.print_exc()
+		except Exception:
+			print("NO function trading_rules.trading_rules")
 			decision_shares = None
 
 		if decision_shares is None:
@@ -229,9 +191,7 @@ def run_simulation():
 
 	# build price lookup for last_date
 	if last_date is not None:
-		# ensure df_prices has datetime 'date' and an index we can query
-		df_prices['date'] = pd.to_datetime(df_prices['date'])
-		price_lookup = df_prices.set_index(['symbol', 'date'])[price_col].to_dict()
+		price_lookup = df_prices.set_index(['symbol', pd.to_datetime(df_prices['date'])])[price_col].to_dict()
 		for symbol, pos in list(positions.items()):
 			shares = pos['shares']
 			# attempt to find price for (symbol, last_date)
