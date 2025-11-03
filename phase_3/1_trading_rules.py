@@ -85,7 +85,16 @@ def predict_impact_from_vectors(model, device, X):
         logits = model(X)               # [N, C]
         probs = torch.softmax(logits, dim=-1)  # [N, C]
         idx = probs.argmax(dim=-1)      # [N]
-        impact = (idx - 3).cpu().numpy()  # map 0..6 -> -3..3
+        # Map predicted class index to a signed impact score.
+        # For a 3-class model we want mapping: 0 -> -2, 1 -> 0, 2 -> 2
+        # For other odd-numbered class counts, center at zero: e.g., 7 -> -3..3
+        n_classes = logits.shape[1]
+        if n_classes == 3:
+            impact_tensor = (idx - 1) * 2
+        else:
+            offset = n_classes // 2
+            impact_tensor = idx - offset
+        impact = impact_tensor.cpu().numpy()
         return {"impact_score": impact}
     
 
@@ -125,50 +134,61 @@ def model_predict(model_key="tfidf"):
     
     return df
 
-def calc_shares(stock, balance):
+def calc_shares(stock):
+    """Calculate number of shares to trade from stock dict.
+
+    Expects stock to contain 'pred_impact_score', 'price' and 'balance'.
+    Returns an integer >= 1.
+    """
     alpha = 1
-    s = math.abs(stock['pred_impact_score'])
-    price = stock['price']
+    # use built-in abs to get absolute value
+    s = abs(stock.get('pred_impact_score', 0))
+    price = float(stock.get('price', 0.0))
+    balance = float(stock.get('balance', 0.0))
+    if price <= 0 or balance <= 0:
+        return 0
     shares = max(1, math.floor((alpha * s / 100) * balance / price))
-    return shares
+    return int(shares)
 
 def buy_rule(stock, balance, owned_shares):
-    price = stock['price']
-    shares = calc_shares(stock, balance)
-    buy_price = shares * price
-    return {
-        'symbol': stock['symbol'], 
-        'date': stock['date'], 
-        'trade_type': 'buy',
-        'owned_shares': owned_shares + shares, 
-        'shares': shares, 
-        'transaction_amount': buy_price,
-        'last_balance': balance,
-        'new_balance': balance - buy_price
-    }
+    """Return number of shares to buy (int)."""
+    # trading simulation passes balance separately; ensure stock has it for calc_shares
+    stock = dict(stock)
+    stock['balance'] = balance
+    shares = calc_shares(stock)
+    return int(shares)
 
 def sell_rule(stock, balance, owned_shares):
+    """Return number of shares to sell (int)."""
+    stock = dict(stock)
+    stock['balance'] = balance
     shares = calc_shares(stock)
-    if owned_shares >= shares:
-        sell_price = shares * stock['price']
-        return {
-            'symbol': stock['symbol'], 
-            'date': stock['date'], 
-            'trade_type': 'sell',
-            'owned_shares': owned_shares - shares, 
-            'shares': shares, 
-            'transaction_amount': sell_price,
-            'last_balance': balance,
-            'new_balance': balance + sell_price
-        }
+    # cap to owned_shares
+    shares = min(int(shares), int(owned_shares))
+    return int(shares) if shares > 0 else 0
 
 def trading_rules(stock, balance, owned_shares):
-    if stock['pred_impact_score'] > 0 and balance/stock['price'] > 0:
-        return buy_rule(stock, balance, owned_shares)
-    elif stock['pred_impact_score'] < 0 and owned_shares > 0:
-        return sell_rule(stock, balance, owned_shares)
+    """Return integer number of shares to buy (>0) or sell (>0), or None for no action.
+
+    Positive decision is buy (simulator looks at pred_impact_score sign), negative
+    is not used because simulator decides direction from pred_impact_score.
+    We follow the simulator contract: return an int (number of shares) or None.
+    """
+    try:
+        impact = float(stock.get('pred_impact_score', 0))
+        price = float(stock.get('price', 0.0))
+    except Exception:
+        return None
+
+    if impact > 0 and price > 0 and balance / price > 0:
+        # buy path: return positive integer shares
+        n = buy_rule(stock, balance, owned_shares)
+        return int(n) if n > 0 else None
+    elif impact < 0 and owned_shares > 0:
+        # sell path: return positive integer shares to sell
+        n = sell_rule(stock, balance, owned_shares)
+        return int(n) if n > 0 else None
     else:
-        # implement logic in 3.2 so if None is returned, no trade calculations are made
         return None
     
 if __name__ == "__main__":
