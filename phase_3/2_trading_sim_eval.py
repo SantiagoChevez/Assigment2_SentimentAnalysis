@@ -21,10 +21,13 @@ REPO_ROOT = THIS_DIR.parent
 DATASETS_DIR = REPO_ROOT / "datasets"
 
 def get_prices(df):
-	prices = df.copy()
+	df = df.copy()
+	df['price'] = df['AdjClose'].fillna(df['close'])
+	return df
 
 def process_datasets():
     df_prices = pd.read_csv(DATASETS_DIR / "historical_prices.csv")
+    df_prices = get_prices(df_prices)
     return df_prices
     
 

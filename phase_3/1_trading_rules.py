@@ -125,37 +125,48 @@ def model_predict(model_key="tfidf"):
     
     return df
 
-def calc_shares(stock):
-    alpha = stock['pred_impact_score']
-    s = stock['pred_impact_score']
-
-    balance = stock['balance']
+def calc_shares(stock, balance):
+    alpha = 1
+    s = math.abs(stock['pred_impact_score'])
     price = stock['price']
     shares = max(1, math.floor((alpha * s / 100) * balance / price))
     return shares
 
-def buy_rule(stock):
-    # calculate number of shares to buy based on available balance and stock price
-    alpha = stock['pred_impact_score']
-    s = stock['pred_impact_score']
-
-    balance = stock['balance']
+def buy_rule(stock, balance, owned_shares):
     price = stock['price']
+    shares = calc_shares(stock, balance)
+    buy_price = shares * price
+    return {
+        'symbol': stock['symbol'], 
+        'date': stock['date'], 
+        'trade_type': 'buy',
+        'owned_shares': owned_shares + shares, 
+        'shares': shares, 
+        'transaction_amount': buy_price,
+        'last_balance': balance,
+        'new_balance': balance - buy_price
+    }
 
-    return calc_shares(stock)
-
-def sell_rule(stock):
-    #TODO: implement sell logic
+def sell_rule(stock, balance, owned_shares):
     shares = calc_shares(stock)
-    return shares
-
-
+    if owned_shares >= shares:
+        sell_price = shares * stock['price']
+        return {
+            'symbol': stock['symbol'], 
+            'date': stock['date'], 
+            'trade_type': 'sell',
+            'owned_shares': owned_shares - shares, 
+            'shares': shares, 
+            'transaction_amount': sell_price,
+            'last_balance': balance,
+            'new_balance': balance + sell_price
+        }
 
 def trading_rules(stock, balance, owned_shares):
     if stock['pred_impact_score'] > 0 and balance/stock['price'] > 0:
-        return buy_rule(stock)
+        return buy_rule(stock, balance, owned_shares)
     elif stock['pred_impact_score'] < 0 and owned_shares > 0:
-        return sell_rule(stock)
+        return sell_rule(stock, balance, owned_shares)
     else:
         # implement logic in 3.2 so if None is returned, no trade calculations are made
         return None
