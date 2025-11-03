@@ -21,10 +21,13 @@ REPO_ROOT = THIS_DIR.parent
 DATASETS_DIR = REPO_ROOT / "datasets"
 
 def get_prices(df):
-	prices = df.copy()
+	df = df.copy()
+	df['price'] = df['AdjClose'].fillna(df['close'])
+	return df
 
 def process_datasets():
     df_prices = pd.read_csv(DATASETS_DIR / "historical_prices.csv")
+    df_prices = get_prices(df_prices)
     return df_prices
     
 
@@ -41,11 +44,13 @@ def run_simulation():
 
     # merge prices with predictions data on symbol and date
 	stock_data = df_with_preds.merge(
-        df_prices[['symbol', 'date', 'AdjClose']],
+        df_prices[['symbol', 'date', 'price']],
         on=['symbol', 'date'],
         how='left'
     )
-	print(stock_data[stock_data['AdjClose'].isna()])
+	stock_data = stock_data.dropna(subset=['price'])
+
+    # initialize trading simulation parameters
 
 
 # make sure to initialize list to keep track of balance
